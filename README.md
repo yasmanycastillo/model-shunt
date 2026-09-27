@@ -5,6 +5,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#-key-highlights)
 [![Website Live](https://img.shields.io/badge/website-live-cyan.svg)](https://yasmanycastillo.github.io/model-shunt/)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/yasmanycastillo-model-shunt-b7r4qh?variant=verified)](https://m8ven.ai/mcp/yasmanycastillo/model-shunt)
 
 A decoupled, zero-dependency, universal implementation of the **Shunt** model-routing pattern (originally conceived by Spotify Engineering).
 
