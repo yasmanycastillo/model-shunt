@@ -58,6 +58,12 @@ TOOLS = [
     {
         "name": "bulk_read",
         "description": "Reads multiple or large files and answers a targeted question using a cheap, fast worker model (e.g. Gemini Flash, Groq, Ollama). Saves ~90% tokens by returning only structured bullet points.",
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
+        },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -85,6 +91,12 @@ TOOLS = [
     {
         "name": "code_write",
         "description": "Generates boilerplate code (tests, mocks, stubs, configs) matching the patterns of a reference file. Can write directly to disk without consuming frontier output tokens.",
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": True
+        },
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -115,6 +127,12 @@ TOOLS = [
     {
         "name": "get_available_models",
         "description": "Discovers active models from the worker provider and recommends the best model for reading (high context / low cost) and writing (code intelligence). Enables calling agents to delegate dynamically to the best model.",
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True
+        },
         "inputSchema": {
             "type": "object",
             "properties": {

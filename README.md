@@ -209,3 +209,7 @@ The test suite validates:
 ## 📄 License
 
 MIT. Inspired by Spotify Engineering's Shunt architecture.
+
+## 🔒 Privacy
+
+See [PRIVACY.md](PRIVACY.md) for filesystem scope, provider data handling, and credential practices.

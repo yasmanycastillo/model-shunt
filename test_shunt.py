@@ -130,6 +130,10 @@ def test_mcp_server():
     tools_resp = json.loads(proc.stdout.readline())
     tools = {t["name"] for t in tools_resp["result"]["tools"]}
     assert "bulk_read" in tools and "code_write" in tools and "get_available_models" in tools, f"Missing tools: {tools}"
+    tool_annotations = {t["name"]: t["annotations"] for t in tools_resp["result"]["tools"]}
+    expected_hints = {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}
+    assert all(set(annotations) == expected_hints for annotations in tool_annotations.values())
+    assert all(isinstance(value, bool) for annotations in tool_annotations.values() for value in annotations.values())
 
     # 3. Call get_available_models tool
     models_req = json.dumps({
