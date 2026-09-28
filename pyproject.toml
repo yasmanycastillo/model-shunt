@@ -19,6 +19,11 @@ classifiers = [
   "Topic :: Software Development :: Code Generators",
 ]
 
+[project.urls]
+Homepage = "https://yasmanycastillo.github.io/model-shunt/"
+Repository = "https://github.com/yasmanycastillo/model-shunt"
+Issues = "https://github.com/yasmanycastillo/model-shunt/issues"
+
 [project.scripts]
 model-shunt = "model_shunt.server:main"
 

@@ -34,19 +34,26 @@ def get_allowed_roots():
     """
     raw = os.environ.get("SHUNT_ALLOWED_ROOTS")
     if raw and raw.strip():
-        return [os.path.abspath(p) for p in raw.split(os.pathsep) if p.strip()]
-    return [os.getcwd()]
+        return [os.path.realpath(p.strip()) for p in raw.split(os.pathsep) if p.strip()]
+    return [os.path.realpath(os.getcwd())]
 
 
 def resolve_allowed_path(path, for_write=False):
     """Resolve `path` and verify it stays inside an allowed root.
 
-    Returns the absolute path, or raises PermissionError with a clear message.
+    Resolves symlinks in the path and its existing parents, including for new
+    write targets. Returns the canonical path or raises PermissionError.
     """
-    abs_path = os.path.abspath(path)
+    if not isinstance(path, str) or not path.strip() or "\x00" in path:
+        raise ValueError("path must be a non-empty string without null bytes")
+    abs_path = os.path.realpath(path)
     for root in get_allowed_roots():
-        if abs_path == root or abs_path.startswith(root + os.sep):
-            return abs_path
+        try:
+            if os.path.commonpath([abs_path, root]) == root:
+                return abs_path
+        except ValueError:
+            # Paths on different drives cannot share an allowed root.
+            continue
     action = "write to" if for_write else "read"
     raise PermissionError(
         f"Path rejected: '{path}' is outside the allowed roots. "
@@ -57,7 +64,7 @@ def resolve_allowed_path(path, for_write=False):
 TOOLS = [
     {
         "name": "bulk_read",
-        "description": "Reads multiple or large files and answers a targeted question using a cheap, fast worker model (e.g. Gemini Flash, Groq, Ollama). Saves ~90% tokens by returning only structured bullet points.",
+        "description": "Reads text files within the allowed workspace roots and sends their content and a question to the configured worker provider (remote or local). Requests a concise answer with line citations. Does not modify files; token savings depend on the input and response.",
         "annotations": {
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -90,7 +97,7 @@ TOOLS = [
     },
     {
         "name": "code_write",
-        "description": "Generates boilerplate code (tests, mocks, stubs, configs) matching the patterns of a reference file. Can write directly to disk without consuming frontier output tokens.",
+        "description": "Sends a specification and the content of a reference file to the configured worker provider (remote or local) to generate code. Returns the code when target_path is omitted; otherwise creates parent directories and writes the code, overwriting any existing target file. File access is restricted to the allowed workspace roots.",
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -110,7 +117,7 @@ TOOLS = [
                 },
                 "target_path": {
                     "type": "string",
-                    "description": "Optional path where generated code should be written directly on disk"
+                    "description": "Optional output path within the allowed roots. Creates missing parent directories and overwrites an existing file."
                 },
                 "model": {
                     "type": "string",
@@ -126,7 +133,7 @@ TOOLS = [
     },
     {
         "name": "get_available_models",
-        "description": "Discovers active models from the worker provider and recommends the best model for reading (high context / low cost) and writing (code intelligence). Enables calling agents to delegate dynamically to the best model.",
+        "description": "Queries the configured worker provider for available models and recommends reader and writer models using built-in preferences. Falls back to a built-in recommendation list when discovery fails or is unsupported; fallback entries are not verified as currently available. Does not modify files.",
         "annotations": {
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -145,12 +152,34 @@ TOOLS = [
     }
 ]
 
+def validate_tool_arguments(name, arguments):
+    """Validate the declared string/array inputs without external dependencies."""
+    if not isinstance(arguments, dict):
+        return "arguments must be an object"
+    schema = next(tool["inputSchema"] for tool in TOOLS if tool["name"] == name)
+    for field in schema.get("required", []):
+        if field not in arguments:
+            return f"{field} is required"
+    for field, rules in schema["properties"].items():
+        if field not in arguments:
+            continue
+        value = arguments[field]
+        if rules["type"] == "string":
+            if not isinstance(value, str) or not value.strip():
+                return f"{field} must be a non-empty string"
+        elif rules["type"] == "array":
+            if not isinstance(value, list) or not value:
+                return f"{field} must be a non-empty array"
+            if any(not isinstance(item, str) or not item.strip() for item in value):
+                return f"{field} must contain non-empty strings"
+    return None
+
 def handle_get_available_models(arguments):
     provider = arguments.get("provider")
-    settings = resolve_settings(override_provider=provider)
-    prov = provider or settings["provider"]
 
     try:
+        settings = resolve_settings(override_provider=provider)
+        prov = provider or settings["provider"]
         models = fetch_available_models(provider=prov)
         best_reader = get_best_model("bulk-reader", provider=prov, available_models=models)
         best_writer = get_best_model("code-writer", provider=prov, available_models=models)
@@ -183,7 +212,7 @@ def handle_bulk_read(arguments):
     for fp in file_paths:
         try:
             fp = resolve_allowed_path(fp)
-        except PermissionError as e:
+        except (ValueError, TypeError, OSError) as e:
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {e}"}]}
         if not os.path.isfile(fp):
             return {"isError": True, "content": [{"type": "text", "text": f"Error: file not found: {fp}"}]}
@@ -219,12 +248,14 @@ def handle_code_write(arguments):
 
     if not spec:
         return {"isError": True, "content": [{"type": "text", "text": "Error: spec is required"}]}
+    if not ref_path:
+        return {"isError": True, "content": [{"type": "text", "text": "Error: reference_path is required"}]}
 
     try:
         ref_path = resolve_allowed_path(ref_path)
         if target_path:
             target_path = resolve_allowed_path(target_path, for_write=True)
-    except PermissionError as e:
+    except (ValueError, TypeError, OSError) as e:
         return {"isError": True, "content": [{"type": "text", "text": f"Error: {e}"}]}
 
     if not ref_path or not os.path.isfile(ref_path):
@@ -249,7 +280,10 @@ def handle_code_write(arguments):
         )
         clean = clean_markdown_fences(code)
         if target_path:
-            os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+            # Generation may take time: recheck parents before touching disk.
+            target_path = resolve_allowed_path(target_path, for_write=True)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            target_path = resolve_allowed_path(target_path, for_write=True)
             with open(target_path, "w", encoding="utf-8") as f:
                 f.write(clean + "\n")
             line_count = len(clean.splitlines())
@@ -264,6 +298,59 @@ def send_response(response_dict):
     sys.stdout.write(body + "\n")
     sys.stdout.flush()
 
+def error_response(msg_id, code, message):
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+
+
+def handle_request(req):
+    """Dispatch one request, keeping tool failures inside that request."""
+    if not isinstance(req, dict):
+        return error_response(None, -32600, "Invalid Request: expected an object")
+    msg_id = req.get("id")
+    if isinstance(msg_id, bool) or not isinstance(msg_id, (str, int, float, type(None))):
+        return error_response(None, -32600, "Invalid Request: invalid id")
+    method = req.get("method")
+    if req.get("jsonrpc") != "2.0" or not isinstance(method, str) or not method:
+        return error_response(msg_id, -32600, "Invalid Request: expected JSON-RPC 2.0 and a method")
+    if "id" not in req:
+        # Notifications do not produce responses or invoke request-only tools.
+        return None
+    params = req.get("params", {})
+    if not isinstance(params, dict):
+        return error_response(msg_id, -32602, "params must be an object")
+
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "model-shunt-mcp", "version": "1.2.1"},
+        }
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": TOOLS}
+    elif method == "tools/call":
+        name = params.get("name")
+        if not isinstance(name, str) or not any(tool["name"] == name for tool in TOOLS):
+            return error_response(msg_id, -32602, "Unknown or missing tool name")
+        args = params.get("arguments", {})
+        validation_error = validate_tool_arguments(name, args)
+        if validation_error:
+            return error_response(msg_id, -32602, validation_error)
+        try:
+            if name == "bulk_read":
+                result = handle_bulk_read(args)
+            elif name == "code_write":
+                result = handle_code_write(args)
+            else:
+                result = handle_get_available_models(args)
+        except Exception as e:
+            result = {"isError": True, "content": [{"type": "text", "text": f"Tool execution failed: {e}"}]}
+    else:
+        return error_response(msg_id, -32601, f"Method {method} not found")
+    return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+
 def main():
     while True:
         line = sys.stdin.readline()
@@ -274,61 +361,12 @@ def main():
             continue
         try:
             req = json.loads(line)
-        except Exception:
+        except (ValueError, RecursionError):
+            send_response(error_response(None, -32700, "Parse error: invalid JSON"))
             continue
-
-        method = req.get("method")
-        msg_id = req.get("id")
-
-        if method == "initialize":
-            send_response({
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {
-                        "name": "model-shunt-mcp",
-                        "version": "1.2.1"
-                    }
-                }
-            })
-        elif method == "notifications/initialized":
-            pass
-        elif method == "ping":
-            send_response({"jsonrpc": "2.0", "id": msg_id, "result": {}})
-        elif method == "tools/list":
-            send_response({
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": {"tools": TOOLS}
-            })
-        elif method == "tools/call":
-            params = req.get("params", {})
-            name = params.get("name")
-            args = params.get("arguments", {})
-
-            if name == "bulk_read":
-                res = handle_bulk_read(args)
-            elif name == "code_write":
-                res = handle_code_write(args)
-            elif name == "get_available_models":
-                res = handle_get_available_models(args)
-            else:
-                res = {"isError": True, "content": [{"type": "text", "text": f"Unknown tool: {name}"}]}
-
-            send_response({
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "result": res
-            })
-        else:
-            if msg_id is not None:
-                send_response({
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "error": {"code": -32601, "message": f"Method {method} not found"}
-                })
+        response = handle_request(req)
+        if response is not None:
+            send_response(response)
 
 if __name__ == "__main__":
     main()

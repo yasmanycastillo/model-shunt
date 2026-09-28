@@ -4,6 +4,7 @@
   "mcpName": "io.github.yasmanycastillo/model-shunt",
   "description": "Model routing for AI coding agents - delegate bulk file reading and boilerplate generation to fast, economical worker models via MCP. Zero Python dependencies.",
   "license": "MIT",
+  "homepage": "https://yasmanycastillo.github.io/model-shunt/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yasmanycastillo/model-shunt.git"
